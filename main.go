@@ -27,9 +27,8 @@ type Payment struct {
 var payments []Payment
 
 type Metrics struct {
-	paymentAmount      metric.Float64Histogram
-	paymentsByStatus   metric.Int64Counter
-	paymentsByCurrency metric.Int64Counter
+	paymentAmount metric.Float64Histogram
+	paymentCount  metric.Int64Counter
 }
 
 var metrics *Metrics
@@ -124,15 +123,12 @@ func handleCreatePayment(w http.ResponseWriter, r *http.Request) {
 	payments = append(payments, payment)
 
 	metrics.paymentAmount.Record(r.Context(), payment.Amount, metric.WithAttributes(
-		attribute.String("currency", payment.Currency),
+		attribute.String("payment.currency", payment.Currency),
 	))
 
-	metrics.paymentsByStatus.Add(r.Context(), 1, metric.WithAttributes(
-		attribute.String("status", payment.Status),
-	))
-
-	metrics.paymentsByCurrency.Add(r.Context(), 1, metric.WithAttributes(
-		attribute.String("currency", payment.Currency),
+	metrics.paymentCount.Add(r.Context(), 1, metric.WithAttributes(
+		attribute.String("payment.status", payment.Status),
+		attribute.String("payment.currency", payment.Currency),
 	))
 
 	w.WriteHeader(http.StatusCreated)
@@ -145,7 +141,7 @@ func initMetrics() error {
 	// Business-specific metrics (HTTP metrics are handled by otelhttp)
 
 	paymentAmount, err := meter.Float64Histogram(
-		"payment_amount",
+		"payment.amount",
 		metric.WithDescription("Payment amounts processed"),
 		metric.WithUnit("currency_unit"),
 	)
@@ -153,19 +149,9 @@ func initMetrics() error {
 		return err
 	}
 
-	// advanced: those could actually be the same counter, but different views
-	paymentsByStatus, err := meter.Int64Counter(
-		"payments_by_status_total",
-		metric.WithDescription("Total number of payments by status"),
-		metric.WithUnit("1"),
-	)
-	if err != nil {
-		return err
-	}
-
-	paymentsByCurrency, err := meter.Int64Counter(
-		"payments_by_currency_total",
-		metric.WithDescription("Total number of payments by currency"),
+	paymentCount, err := meter.Int64Counter(
+		"payment.count",
+		metric.WithDescription("Total number of payments processed"),
 		metric.WithUnit("1"),
 	)
 	if err != nil {
@@ -173,9 +159,8 @@ func initMetrics() error {
 	}
 
 	metrics = &Metrics{
-		paymentAmount:      paymentAmount,
-		paymentsByStatus:   paymentsByStatus,
-		paymentsByCurrency: paymentsByCurrency,
+		paymentAmount: paymentAmount,
+		paymentCount:  paymentCount,
 	}
 
 	return nil

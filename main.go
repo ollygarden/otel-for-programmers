@@ -1,11 +1,15 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
-	"log"
 	"net/http"
 	"time"
+
+	"payment-service/internal/telemetry"
+
+	"go.uber.org/zap"
 )
 
 type Payment struct {
@@ -18,15 +22,39 @@ type Payment struct {
 var payments []Payment
 
 func main() {
+	ctx := context.Background()
+
+	closer, err := telemetry.Setup(ctx, "1.0.0", "local/otel.yaml")
+	if err != nil {
+		panic(err)
+	}
+	defer func() {
+		if err := closer(ctx); err != nil {
+			telemetry.Logger().Error("Failed to shutdown telemetry", zap.Error(err))
+		}
+	}()
+
+	ctx, span := telemetry.Tracer().Start(ctx, "run")
+
+	logger := telemetry.Logger()
+	logger.Info("Starting payment service")
+
 	http.HandleFunc("/api/payment", paymentHandler)
-	
-	fmt.Println("Server starting on :8080")
-	log.Fatal(http.ListenAndServe(":8080", nil))
+
+	logger.Info("Server starting on :8080")
+	span.End()
+
+	if err := http.ListenAndServe(":8080", nil); err != nil {
+		logger.Fatal("Server failed to start", zap.Error(err))
+	}
 }
 
 func paymentHandler(w http.ResponseWriter, r *http.Request) {
+	_, span := telemetry.Tracer().Start(r.Context(), "paymentHandler")
+	defer span.End()
+
 	w.Header().Set("Content-Type", "application/json")
-	
+
 	switch r.Method {
 	case http.MethodGet:
 		handleGetPayments(w, r)
@@ -44,19 +72,19 @@ func handleGetPayments(w http.ResponseWriter, r *http.Request) {
 
 func handleCreatePayment(w http.ResponseWriter, r *http.Request) {
 	var payment Payment
-	
+
 	if err := json.NewDecoder(r.Body).Decode(&payment); err != nil {
 		w.WriteHeader(http.StatusBadRequest)
 		json.NewEncoder(w).Encode(map[string]string{"error": "Invalid JSON"})
 		return
 	}
-	
+
 	payment.ID = fmt.Sprintf("pay_%d", time.Now().Unix())
 	payment.Date = time.Now().Format(time.RFC3339)
 	payment.Status = "pending"
-	
+
 	payments = append(payments, payment)
-	
+
 	w.WriteHeader(http.StatusCreated)
 	json.NewEncoder(w).Encode(payment)
 }

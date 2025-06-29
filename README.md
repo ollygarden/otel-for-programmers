@@ -11,7 +11,7 @@ A simple Go payment service that demonstrates how to implement OpenTelemetry ins
 - Payment creation and retrieval
 - RESTful API endpoints
 - In-memory storage (for demo purposes)
-- Ready for OpenTelemetry instrumentation
+- OpenTelemetry instrumentation with traces, metrics, and logs
 
 ## API Endpoints
 
@@ -50,6 +50,24 @@ Get all payments:
 ```bash
 curl http://localhost:8080/api/payment
 ```
+
+## OpenTelemetry Configuration
+
+This service sends telemetry data (traces, metrics, and logs) to an OTLP endpoint on `localhost:4318`. 
+
+### Visualizing Telemetry Data
+
+To easily ingest and visualize the telemetry data, you can use the Grafana OTEL LGTM Docker image:
+
+```bash
+docker run --name og-lgtm -p 3000:3000 -p 4318:4318 --rm -d grafana/otel-lgtm
+```
+
+This will start:
+- Grafana on port 3000 (admin/admin)
+- OTLP receiver on port 4318
+
+Once running, start the payment service and make some API calls to generate telemetry data that you can explore in Grafana.
 
 ## About the Presentation
 

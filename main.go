@@ -5,13 +5,14 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
-	"strconv"
 	"time"
 
 	"payment-service/internal/telemetry"
 
+	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/metric"
+	"go.opentelemetry.io/otel/trace"
 	"go.uber.org/zap"
 )
 
@@ -26,12 +27,9 @@ type Payment struct {
 var payments []Payment
 
 type Metrics struct {
-	requestCounter      metric.Int64Counter
-	responseDuration    metric.Float64Histogram
-	errorCounter        metric.Int64Counter
-	paymentAmount       metric.Float64Histogram
-	paymentsByStatus    metric.Int64Counter
-	paymentsByCurrency  metric.Int64Counter
+	paymentAmount      metric.Float64Histogram
+	paymentsByStatus   metric.Int64Counter
+	paymentsByCurrency metric.Int64Counter
 }
 
 var metrics *Metrics
@@ -58,71 +56,52 @@ func main() {
 	logger := telemetry.Logger()
 	logger.Info("Starting payment service")
 
-	http.HandleFunc("/api/payment", paymentHandler)
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/payment", paymentHandler)
+
+	// Wrap the mux with otelhttp for automatic HTTP instrumentation
+	handler := otelhttp.NewHandler(mux, "payment-service", otelhttp.WithSpanNameFormatter(
+		func(_ string, r *http.Request) string {
+			return fmt.Sprintf("%s %s", r.Method, r.URL.Path)
+		},
+	))
 
 	logger.Info("Server starting on :8080")
 	span.End()
 
-	if err := http.ListenAndServe(":8080", nil); err != nil {
+	if err := http.ListenAndServe(":8080", handler); err != nil {
 		logger.Fatal("Server failed to start", zap.Error(err))
 	}
 }
 
 func paymentHandler(w http.ResponseWriter, r *http.Request) {
-	start := time.Now()
-	_, span := telemetry.Tracer().Start(r.Context(), "paymentHandler")
-	defer span.End()
-
 	w.Header().Set("Content-Type", "application/json")
 
-	metrics.requestCounter.Add(r.Context(), 1, metric.WithAttributes(
-		attribute.String("method", r.Method),
-		attribute.String("endpoint", r.URL.Path),
-	))
-
-	var statusCode int
-	defer func() {
-		duration := time.Since(start).Seconds()
-		metrics.responseDuration.Record(r.Context(), duration, metric.WithAttributes(
-			attribute.String("method", r.Method),
-			attribute.String("endpoint", r.URL.Path),
-			attribute.String("status_code", strconv.Itoa(statusCode)),
-		))
-
-		if statusCode >= 400 {
-			metrics.errorCounter.Add(r.Context(), 1, metric.WithAttributes(
-				attribute.String("method", r.Method),
-				attribute.String("endpoint", r.URL.Path),
-				attribute.String("status_code", strconv.Itoa(statusCode)),
-			))
-		}
-	}()
-
+	// otelhttp automatically creates spans and records HTTP metrics for us
+	// We only need to handle business logic here
 	switch r.Method {
 	case http.MethodGet:
-		statusCode = handleGetPayments(w, r)
+		handleGetPayments(w, r)
 	case http.MethodPost:
-		statusCode = handleCreatePayment(w, r)
+		handleCreatePayment(w, r)
 	default:
-		statusCode = http.StatusMethodNotAllowed
-		w.WriteHeader(statusCode)
+		w.WriteHeader(http.StatusMethodNotAllowed)
 		json.NewEncoder(w).Encode(map[string]string{"error": "Method not allowed"})
 	}
 }
 
-func handleGetPayments(w http.ResponseWriter, _ *http.Request) int {
+func handleGetPayments(w http.ResponseWriter, _ *http.Request) {
 	w.WriteHeader(http.StatusOK)
 	json.NewEncoder(w).Encode(payments)
-	return http.StatusOK
 }
 
-func handleCreatePayment(w http.ResponseWriter, r *http.Request) int {
+func handleCreatePayment(w http.ResponseWriter, r *http.Request) {
 	var payment Payment
 
 	if err := json.NewDecoder(r.Body).Decode(&payment); err != nil {
 		w.WriteHeader(http.StatusBadRequest)
 		json.NewEncoder(w).Encode(map[string]string{"error": "Invalid JSON"})
-		return http.StatusBadRequest
+		return
 	}
 
 	if payment.Currency == "" {
@@ -132,6 +111,15 @@ func handleCreatePayment(w http.ResponseWriter, r *http.Request) int {
 	payment.ID = fmt.Sprintf("pay_%d", time.Now().Unix())
 	payment.Date = time.Now().Format(time.RFC3339)
 	payment.Status = "pending"
+
+	// Get the current span from context (created by otelhttp) and add custom attributes
+	span := trace.SpanFromContext(r.Context())
+	span.SetAttributes(
+		attribute.String("payment.currency", payment.Currency),
+		attribute.Float64("payment.amount", payment.Amount),
+		attribute.String("payment.status", payment.Status),
+		attribute.String("payment.id", payment.ID),
+	)
 
 	payments = append(payments, payment)
 
@@ -149,38 +137,12 @@ func handleCreatePayment(w http.ResponseWriter, r *http.Request) int {
 
 	w.WriteHeader(http.StatusCreated)
 	json.NewEncoder(w).Encode(payment)
-	return http.StatusCreated
 }
 
 func initMetrics() error {
 	meter := telemetry.Meter()
 
-	requestCounter, err := meter.Int64Counter(
-		"http_requests_total",
-		metric.WithDescription("Total number of HTTP requests"),
-		metric.WithUnit("1"),
-	)
-	if err != nil {
-		return err
-	}
-
-	responseDuration, err := meter.Float64Histogram(
-		"http_request_duration_seconds",
-		metric.WithDescription("HTTP request duration in seconds"),
-		metric.WithUnit("s"),
-	)
-	if err != nil {
-		return err
-	}
-
-	errorCounter, err := meter.Int64Counter(
-		"http_errors_total",
-		metric.WithDescription("Total number of HTTP errors"),
-		metric.WithUnit("1"),
-	)
-	if err != nil {
-		return err
-	}
+	// Business-specific metrics (HTTP metrics are handled by otelhttp)
 
 	paymentAmount, err := meter.Float64Histogram(
 		"payment_amount",
@@ -191,6 +153,7 @@ func initMetrics() error {
 		return err
 	}
 
+	// advanced: those could actually be the same counter, but different views
 	paymentsByStatus, err := meter.Int64Counter(
 		"payments_by_status_total",
 		metric.WithDescription("Total number of payments by status"),
@@ -210,12 +173,9 @@ func initMetrics() error {
 	}
 
 	metrics = &Metrics{
-		requestCounter:      requestCounter,
-		responseDuration:    responseDuration,
-		errorCounter:        errorCounter,
-		paymentAmount:       paymentAmount,
-		paymentsByStatus:    paymentsByStatus,
-		paymentsByCurrency:  paymentsByCurrency,
+		paymentAmount:      paymentAmount,
+		paymentsByStatus:   paymentsByStatus,
+		paymentsByCurrency: paymentsByCurrency,
 	}
 
 	return nil

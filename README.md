@@ -1,6 +1,6 @@
-# Getting Started with OpenTelemetry
+# OTel for Programmers
 
-This is a demonstration project created for the CloudLand presentation on **July 3, 2025**.
+This is a demonstration project used with our "OTel for Programmers" presentation.
 
 ## Overview
 
@@ -58,7 +58,3 @@ This project serves as the foundation for demonstrating OpenTelemetry concepts i
 - Metrics collection
 - Observability best practices
 - Integration with monitoring systems
-
----
-
-**CloudLand 2025 - Getting Started with OpenTelemetry**
